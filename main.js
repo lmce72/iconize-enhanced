@@ -975,7 +975,7 @@ async function collectSvgFiles(adapter, basePath, listing) {
  * @param {string} name - Original icon name
  * @returns {string} Normalized name
  */
-// [DUPLICATE REMOVED] function getNormalizedName(name) {
+function getNormalizedName(name) {
   return name
     .split(/[-_\s]+/)
     .map(part => capitalize(part))
@@ -986,10 +986,10 @@ async function collectSvgFiles(adapter, basePath, listing) {
  * 首字母大写
  * Capitalize first letter
  */
-// [DUPLICATE REMOVED] function capitalize(str) {
-  if (!str) return '';
-  return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
-}
+// function capitalize(str) {
+//   if (!str) return '';
+//   return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+// }
 
 /**
  * 创建图标包前缀
@@ -998,7 +998,7 @@ async function collectSvgFiles(adapter, basePath, listing) {
  * @param {string} name - Icon pack name
  * @returns {string} Prefix (e.g., "font-awesome-solid" -> "Fas")
  */
-// [DUPLICATE REMOVED] function createIconPackPrefix(name) {
+function createIconPackPrefix(name) {
   return name
     .split('-')
     .map(part => part.charAt(0).toUpperCase())
@@ -1160,11 +1160,11 @@ const iconPacks$1 = {
  * @returns String of the path to the icon pack or undefined if the icon pack does not
  * exist.
  */
-// [DUPLICATE REMOVED] const getExtraPath = (iconPackName) => {
-    var _a;
-    const path = (_a = Object.values(iconPacks$1).find((iconPack) => iconPack.name === iconPackName)) === null || _a === void 0 ? void 0 : _a.path;
-    return (path === null || path === void 0 ? void 0 : path.length) === 0 ? undefined : path;
-};
+// const getExtraPath = (iconPackName) => {
+//     var _a;
+//     const path = (_a = Object.values(iconPacks$1).find((iconPack) => iconPack.name === iconPackName)) === null || _a === void 0 ? void 0 : _a.path;
+//     return (path === null || path === void 0 ? void 0 : path.length) === 0 ? undefined : path;
+// };
 
 // This library file does not include any other dependency and is a standalone file that
 // only include utility functions for manipulating or extracting svg information.
@@ -1533,12 +1533,12 @@ const createDirectory = (plugin, dir) => __awaiter(void 0, void 0, void 0, funct
     }
     return doesDirExist;
 });
-// [DUPLICATE REMOVED] const getNormalizedName = (s) => {
-    return s
-        .split(/[ -]|[ _]/g)
-        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-        .join('');
-};
+// const getNormalizedName = (s) => {
+//     return s
+//         .split(/[ -]|[ _]/g)
+//         .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+//         .join('');
+// };
 // export const normalizeFileName = async (plugin: Plugin, oldPath: string) => {
 //   const fileName = oldPath.split('/').pop();
 //   const newPath = oldPath.substring(0, oldPath.indexOf(fileName)) + getNormalizedName(fileName);
@@ -1628,17 +1628,17 @@ const generateIcon = (iconPackName, iconName, content) => {
     };
     return icon;
 };
-// [DUPLICATE REMOVED] const createIconPackPrefix = (iconPackName) => {
-    if (iconPackName.includes('-')) {
-        const splitted = iconPackName.split('-');
-        let result = splitted[0].charAt(0).toUpperCase();
-        for (let i = 1; i < splitted.length; i++) {
-            result += splitted[i].charAt(0).toLowerCase();
-        }
-        return result;
-    }
-    return (iconPackName.charAt(0).toUpperCase() + iconPackName.charAt(1).toLowerCase());
-};
+// const createIconPackPrefix = (iconPackName) => {
+//     if (iconPackName.includes('-')) {
+//         const splitted = iconPackName.split('-');
+//         let result = splitted[0].charAt(0).toUpperCase();
+//         for (let i = 1; i < splitted.length; i++) {
+//             result += splitted[i].charAt(0).toLowerCase();
+//         }
+//         return result;
+//     }
+//     return (iconPackName.charAt(0).toUpperCase() + iconPackName.charAt(1).toLowerCase());
+// };
 
 const loadUsedIconsLazy = (plugin, iconNames) => __awaiter(void 0, void 0, void 0, function* () {
     // 回退到原始函数

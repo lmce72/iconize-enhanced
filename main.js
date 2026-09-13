@@ -975,7 +975,7 @@ async function collectSvgFiles(adapter, basePath, listing) {
  * @param {string} name - Original icon name
  * @returns {string} Normalized name
  */
-function getNormalizedName(name) {
+// [DUPLICATE REMOVED] function getNormalizedName(name) {
   return name
     .split(/[-_\s]+/)
     .map(part => capitalize(part))
@@ -986,7 +986,7 @@ function getNormalizedName(name) {
  * 首字母大写
  * Capitalize first letter
  */
-function capitalize(str) {
+// [DUPLICATE REMOVED] function capitalize(str) {
   if (!str) return '';
   return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
 }
@@ -998,7 +998,7 @@ function capitalize(str) {
  * @param {string} name - Icon pack name
  * @returns {string} Prefix (e.g., "font-awesome-solid" -> "Fas")
  */
-function createIconPackPrefix(name) {
+// [DUPLICATE REMOVED] function createIconPackPrefix(name) {
   return name
     .split('-')
     .map(part => part.charAt(0).toUpperCase())
@@ -1160,7 +1160,7 @@ const iconPacks$1 = {
  * @returns String of the path to the icon pack or undefined if the icon pack does not
  * exist.
  */
-const getExtraPath = (iconPackName) => {
+// [DUPLICATE REMOVED] const getExtraPath = (iconPackName) => {
     var _a;
     const path = (_a = Object.values(iconPacks$1).find((iconPack) => iconPack.name === iconPackName)) === null || _a === void 0 ? void 0 : _a.path;
     return (path === null || path === void 0 ? void 0 : path.length) === 0 ? undefined : path;
@@ -1533,7 +1533,7 @@ const createDirectory = (plugin, dir) => __awaiter(void 0, void 0, void 0, funct
     }
     return doesDirExist;
 });
-const getNormalizedName = (s) => {
+// [DUPLICATE REMOVED] const getNormalizedName = (s) => {
     return s
         .split(/[ -]|[ _]/g)
         .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
@@ -1628,7 +1628,7 @@ const generateIcon = (iconPackName, iconName, content) => {
     };
     return icon;
 };
-const createIconPackPrefix = (iconPackName) => {
+// [DUPLICATE REMOVED] const createIconPackPrefix = (iconPackName) => {
     if (iconPackName.includes('-')) {
         const splitted = iconPackName.split('-');
         let result = splitted[0].charAt(0).toUpperCase();

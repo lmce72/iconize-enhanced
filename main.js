@@ -5,6 +5,13 @@ if you want to view the source visit the plugins github repository
 
 'use strict';
 
+// Global JSZip instance for lazy loading modules
+const JSZip = (() => {
+  const lib = requireJszip_min();
+  return lib;
+})();
+
+
 var obsidian = require('obsidian');
 var view = require('@codemirror/view');
 var state = require('@codemirror/state');
@@ -211,7 +218,7 @@ module.exports = IconIndexStore;
 
 'use strict';
 
-const JSZip = require('jszip');
+// JSZip is globally available (defined at top of main.js)
 
 class IconResolver {
   /**
@@ -793,7 +800,7 @@ module.exports = InlineIconLoader;
 
 'use strict';
 
-const JSZip = require('jszip');
+// JSZip is globally available (defined at top of main.js)
 
 /**
  * 构建图标包索引

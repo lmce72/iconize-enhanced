@@ -1,0 +1,6 @@
+# DO NOT USE - BROKEN VERSION
+This file contains a bundled JSZip module that fails to load in Obsidian with error:
+'Cannot read properties of undefined (reading "exports")'
+
+The JSZip module wrapper has syntax issues despite passing Node.js validation.
+Use the modular version instead.

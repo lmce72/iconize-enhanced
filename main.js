@@ -43,44 +43,1023 @@ typeof SuppressedError === "function" ? SuppressedError : function (error, suppr
 };
 
 
-// ========== Lazy Loading System Modules ==========
-// 按需加载系统模块 / Lazy Loading System Modules
-const IconIndexStore = (() => {
-    try {
-        return require('./icon-index-store.js');
-    } catch (e) {
-        console.warn('[Iconize] IconIndexStore not found, lazy loading disabled');
-        return null;
-    }
-})();
 
-const IconResolver = (() => {
-    try {
-        return require('./icon-resolver.js');
-    } catch (e) {
-        console.warn('[Iconize] IconResolver not found, lazy loading disabled');
-        return null;
-    }
-})();
+// ========== icon-index-store.js ==========
+/**
+ * IconIndexStore - 图标索引存储系统
+ * Icon Index Storage System
+ *
+ * 负责持久化图标包的元数据索引到磁盘，避免每次启动都重新扫描 ZIP 文件
+ * Persists icon pack metadata indexes to disk to avoid rescanning ZIP files on every startup
+ */
 
-const InlineIconLoader = (() => {
-    try {
-        return require('./inline-icon-loader.js');
-    } catch (e) {
-        console.warn('[Iconize] InlineIconLoader not found, lazy loading disabled');
-        return null;
-    }
-})();
+'use strict';
 
-const IconIndexing = (() => {
+class IconIndexStore {
+  /**
+   * @param {Object} adapter - Obsidian Vault Adapter
+   * @param {string} basePath - Base path for icon packs (e.g., .obsidian/icons)
+   */
+  constructor(adapter, basePath) {
+    this.adapter = adapter;
+    this.basePath = basePath;
+    this.indexPath = `${basePath}/.index`;
+  }
+
+  /**
+   * 确保索引目录存在
+   * Ensure index directory exists
+   */
+  async ensureDirectory() {
     try {
-        return require('./icon-indexing.js');
-    } catch (e) {
-        console.warn('[Iconize] IconIndexing not found, lazy loading disabled');
-        return {};
+      if (!(await this.adapter.exists(this.indexPath))) {
+        await this.adapter.mkdir(this.indexPath);
+      }
+    } catch (error) {
+      console.error('[IconIndexStore] Failed to create index directory:', error);
     }
-})();
-// ========== End Lazy Loading System ==========
+  }
+
+  /**
+   * 保存图标包索引
+   * Save icon pack index
+   *
+   * @param {string} packName - Icon pack name
+   * @param {Object} index - Index object containing metadata
+   * @returns {Promise<void>}
+   */
+  async save(packName, index) {
+    try {
+      await this.ensureDirectory();
+      const path = `${this.indexPath}/${packName}.json`;
+      const content = JSON.stringify(index, null, 2);
+      await this.adapter.write(path, content);
+      console.log(`[IconIndexStore] Saved index for ${packName} (${index.entries.length} icons)`);
+    } catch (error) {
+      console.error(`[IconIndexStore] Failed to save index for ${packName}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * 加载图标包索引
+   * Load icon pack index
+   *
+   * @param {string} packName - Icon pack name
+   * @returns {Promise<Object|null>} Index object or null if not found
+   */
+  async load(packName) {
+    try {
+      const path = `${this.indexPath}/${packName}.json`;
+      if (!(await this.adapter.exists(path))) {
+        return null;
+      }
+      const content = await this.adapter.read(path);
+      return JSON.parse(content);
+    } catch (error) {
+      console.error(`[IconIndexStore] Failed to load index for ${packName}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * 删除图标包索引
+   * Delete icon pack index
+   *
+   * @param {string} packName - Icon pack name
+   * @returns {Promise<void>}
+   */
+  async delete(packName) {
+    try {
+      const path = `${this.indexPath}/${packName}.json`;
+      if (await this.adapter.exists(path)) {
+        await this.adapter.remove(path);
+        console.log(`[IconIndexStore] Deleted index for ${packName}`);
+      }
+    } catch (error) {
+      console.error(`[IconIndexStore] Failed to delete index for ${packName}:`, error);
+    }
+  }
+
+  /**
+   * 列出所有已索引的图标包
+   * List all indexed icon packs
+   *
+   * @returns {Promise<string[]>} Array of pack names
+   */
+  async listIndexedPacks() {
+    try {
+      if (!(await this.adapter.exists(this.indexPath))) {
+        return [];
+      }
+      const listing = await this.adapter.list(this.indexPath);
+      return listing.files
+        .filter(file => file.endsWith('.json'))
+        .map(file => file.split('/').pop().replace('.json', ''));
+    } catch (error) {
+      console.error('[IconIndexStore] Failed to list indexed packs:', error);
+      return [];
+    }
+  }
+
+  /**
+   * 检查索引是否过期
+   * Check if index is stale
+   *
+   * @param {Object|null} stored - Stored index object
+   * @param {string} fingerprint - Current fingerprint (hash or mtime)
+   * @returns {boolean} True if index needs rebuild
+   */
+  isStale(stored, fingerprint) {
+    if (!stored || !stored.fingerprint) {
+      return true;
+    }
+    return stored.fingerprint !== fingerprint;
+  }
+
+  /**
+   * 清空所有索引（用于重置或迁移）
+   * Clear all indexes (for reset or migration)
+   *
+   * @returns {Promise<void>}
+   */
+  async clearAll() {
+    try {
+      if (await this.adapter.exists(this.indexPath)) {
+        await this.adapter.rmdir(this.indexPath, true);
+        console.log('[IconIndexStore] Cleared all indexes');
+      }
+    } catch (error) {
+      console.error('[IconIndexStore] Failed to clear indexes:', error);
+    }
+  }
+}
+
+module.exports = IconIndexStore;
+
+// ========== End icon-index-store.js ==========
+
+// ========== icon-resolver.js ==========
+/**
+ * IconResolver - 图标解析器（三层缓存架构）
+ * Icon Resolver with Three-Tier Cache Architecture
+ *
+ * Layer 1: Memory Cache (已解析的 Icon 对象 / Parsed Icon objects)
+ * Layer 2: Disk Cache (.obsidian/icons/.cache / Processed SVG files)
+ * Layer 3: Source (ZIP 压缩包或文件夹 / ZIP archives or folders)
+ */
+
+'use strict';
+
+const JSZip = require('jszip');
+
+class IconResolver {
+  /**
+   * @param {Object} plugin - Iconize plugin instance
+   * @param {Object} iconPacksRef - Reference to global iconPacks array
+   * @param {Function} svgExtract - SVG extraction function
+   */
+  constructor(plugin, iconPacksRef, svgExtract) {
+    this.plugin = plugin;
+    this.iconPacks = iconPacksRef;
+    this.svgExtract = svgExtract;
+
+    // Layer 1: Memory cache (iconId -> Icon object)
+    this.memoryCache = new Map();
+
+    // Disk cache path
+    this.diskCachePath = `${this.plugin.getSettings().iconPacksPath}/.cache`;
+
+    // Prefix index for O(1) lookup
+    this.prefixIndex = new Map();
+  }
+
+  /**
+   * 构建前缀索引
+   * Build prefix index for fast lookup
+   */
+  buildPrefixIndex() {
+    this.prefixIndex.clear();
+    this.iconPacks.forEach(pack => {
+      if (pack.prefix) {
+        this.prefixIndex.set(pack.prefix, pack);
+      }
+    });
+    console.log(`[IconResolver] Built prefix index with ${this.prefixIndex.size} entries`);
+  }
+
+  /**
+   * 同步查询 - 仅返回已加载到内存的图标
+   * Synchronous peek - returns only memory-cached icons
+   *
+   * @param {string} iconId - Full icon identifier (e.g., "LiHome")
+   * @returns {Object|undefined} Icon object or undefined
+   */
+  peek(iconId) {
+    return this.memoryCache.get(iconId);
+  }
+
+  /**
+   * 异步解析 - 按需加载
+   * Async resolve - load on demand
+   *
+   * @param {string} iconId - Full icon identifier
+   * @param {Object} options - Resolve options
+   * @param {boolean} options.persist - Whether to persist to disk cache (default: true)
+   * @param {string|null} options.color - Icon color override
+   * @returns {Promise<Object|null>} Icon object or null
+   */
+  async resolve(iconId, options = {}) {
+    const { persist = true, color = null } = options;
+
+    try {
+      // Layer 1: Memory cache hit
+      if (this.memoryCache.has(iconId)) {
+        return this.memoryCache.get(iconId);
+      }
+
+      // Find entry in index
+      const entry = this.findEntry(iconId);
+      if (!entry) {
+        console.warn(`[IconResolver] Icon "${iconId}" not found in any pack index`);
+        return null;
+      }
+
+      // Layer 2: Try disk cache
+      const cacheKey = `${entry.packName}/${entry.filename}`;
+      const cached = await this.loadFromDiskCache(cacheKey);
+      if (cached) {
+        this.memoryCache.set(iconId, cached);
+        return cached;
+      }
+
+      // Layer 3: Extract from source
+      const svgContent = await this.extractFromSource(entry);
+      if (!svgContent) {
+        console.error(`[IconResolver] Failed to extract SVG for ${iconId}`);
+        return null;
+      }
+
+      // Parse and build icon object
+      const icon = {
+        name: entry.name,
+        filename: entry.filename,
+        prefix: entry.prefix,
+        svgElement: this.svgExtract(svgContent),
+        svgContent: svgContent,
+        svgViewbox: this.extractViewBox(svgContent),
+        iconPackName: entry.packName,
+      };
+
+      // Save to caches
+      if (persist) {
+        await this.saveToDiskCache(cacheKey, icon);
+      }
+      this.memoryCache.set(iconId, icon);
+
+      return icon;
+    } catch (error) {
+      console.error(`[IconResolver] Failed to resolve ${iconId}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * 批量预加载图标
+   * Batch prefetch icons
+   *
+   * @param {string[]} iconIds - Array of icon identifiers
+   * @returns {Promise<{loaded: number, failed: string[]}>}
+   */
+  async prefetch(iconIds) {
+    const uniqueIds = [...new Set(iconIds)];
+    const failed = [];
+    let loaded = 0;
+
+    for (const iconId of uniqueIds) {
+      try {
+        const icon = await this.resolve(iconId);
+        if (icon) {
+          loaded++;
+        } else {
+          failed.push(iconId);
+        }
+      } catch (error) {
+        console.error(`[IconResolver] Prefetch failed for ${iconId}:`, error);
+        failed.push(iconId);
+      }
+    }
+
+    console.log(`[IconResolver] Prefetch complete: ${loaded} loaded, ${failed.length} failed`);
+    return { loaded, failed };
+  }
+
+  /**
+   * 从索引查找条目 (O(1) 查找)
+   * Find entry from index (O(1) lookup)
+   *
+   * @param {string} iconId - Full icon identifier
+   * @returns {Object|null} Entry object or null
+   */
+  findEntry(iconId) {
+    if (!iconId) return null;
+
+    // Extract prefix and name
+    const split = this.nextIdentifier(iconId);
+    const prefix = iconId.substring(0, split);
+    const name = iconId.substring(split);
+
+    // Fast lookup by prefix
+    const pack = this.prefixIndex.get(prefix);
+    if (!pack || !pack.index) {
+      return null;
+    }
+
+    // Find in pack's index
+    const entry = pack.index.entries.find(e =>
+      e.id === iconId ||
+      e.name.toLowerCase() === name.toLowerCase()
+    );
+
+    return entry ? { ...entry, packName: pack.name } : null;
+  }
+
+  /**
+   * 从源文件提取 SVG
+   * Extract SVG from source (ZIP or folder)
+   *
+   * @param {Object} entry - Index entry
+   * @returns {Promise<string|null>} SVG content or null
+   */
+  async extractFromSource(entry) {
+    const pack = this.iconPacks.find(p => p.name === entry.packName);
+    if (!pack || !pack.source) {
+      return null;
+    }
+
+    try {
+      if (pack.source.type === 'zip') {
+        // Extract from ZIP
+        const zipPath = pack.source.path;
+        const zipContent = await this.plugin.app.vault.adapter.readBinary(zipPath);
+        const zip = await JSZip.loadAsync(zipContent);
+
+        // Try with extra path prefix
+        const extraPath = pack.source.extraPath || '';
+        const filePath = extraPath ? `${extraPath}/${entry.filename}` : entry.filename;
+
+        const file = zip.file(filePath);
+        if (!file) {
+          console.warn(`[IconResolver] File not found in ZIP: ${filePath}`);
+          return null;
+        }
+
+        return await file.async('text');
+      } else if (pack.source.type === 'folder') {
+        // Read from folder
+        const filePath = `${pack.source.path}/${entry.filename}`;
+        return await this.plugin.app.vault.adapter.read(filePath);
+      }
+    } catch (error) {
+      console.error(`[IconResolver] Failed to extract ${entry.filename}:`, error);
+      return null;
+    }
+
+    return null;
+  }
+
+  /**
+   * 从磁盘缓存加载
+   * Load from disk cache
+   *
+   * @param {string} cacheKey - Cache key (packName/filename)
+   * @returns {Promise<Object|null>}
+   */
+  async loadFromDiskCache(cacheKey) {
+    try {
+      const path = `${this.diskCachePath}/${cacheKey}.json`;
+      if (!(await this.plugin.app.vault.adapter.exists(path))) {
+        return null;
+      }
+      const content = await this.plugin.app.vault.adapter.read(path);
+      return JSON.parse(content);
+    } catch (error) {
+      // Silent fail for cache miss
+      return null;
+    }
+  }
+
+  /**
+   * 保存到磁盘缓存
+   * Save to disk cache
+   *
+   * @param {string} cacheKey - Cache key
+   * @param {Object} icon - Icon object
+   * @returns {Promise<void>}
+   */
+  async saveToDiskCache(cacheKey, icon) {
+    try {
+      const path = `${this.diskCachePath}/${cacheKey}.json`;
+      const dir = path.substring(0, path.lastIndexOf('/'));
+
+      // Ensure directory exists
+      if (!(await this.plugin.app.vault.adapter.exists(dir))) {
+        await this.ensureDirectoryPath(dir);
+      }
+
+      await this.plugin.app.vault.adapter.write(path, JSON.stringify(icon));
+    } catch (error) {
+      console.error(`[IconResolver] Failed to save to disk cache: ${cacheKey}`, error);
+    }
+  }
+
+  /**
+   * 递归创建目录路径
+   * Recursively create directory path
+   */
+  async ensureDirectoryPath(path) {
+    const parts = path.split('/');
+    let current = '';
+
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : part;
+      if (!(await this.plugin.app.vault.adapter.exists(current))) {
+        await this.plugin.app.vault.adapter.mkdir(current);
+      }
+    }
+  }
+
+  /**
+   * 提取 SVG viewBox
+   * Extract SVG viewBox
+   */
+  extractViewBox(svgContent) {
+    const match = svgContent.match(/viewBox=["']([^"']+)["']/i);
+    return match ? match[1] : '';
+  }
+
+  /**
+   * 查找下一个大写字母或数字的位置（用于分离前缀）
+   * Find next uppercase letter or digit position (for prefix separation)
+   */
+  nextIdentifier(iconName) {
+    return iconName.substring(1).search(/[A-Z0-9]/) + 1;
+  }
+
+  /**
+   * 清空内存缓存
+   * Clear memory cache
+   */
+  clearMemoryCache() {
+    this.memoryCache.clear();
+    console.log('[IconResolver] Memory cache cleared');
+  }
+
+  /**
+   * 清空磁盘缓存
+   * Clear disk cache
+   */
+  async clearDiskCache() {
+    try {
+      if (await this.plugin.app.vault.adapter.exists(this.diskCachePath)) {
+        await this.plugin.app.vault.adapter.rmdir(this.diskCachePath, true);
+        console.log('[IconResolver] Disk cache cleared');
+      }
+    } catch (error) {
+      console.error('[IconResolver] Failed to clear disk cache:', error);
+    }
+  }
+
+  /**
+   * 移除特定图标包的缓存
+   * Remove cache for specific icon pack
+   */
+  async removePackCache(packName) {
+    try {
+      const packCachePath = `${this.diskCachePath}/${packName}`;
+      if (await this.plugin.app.vault.adapter.exists(packCachePath)) {
+        await this.plugin.app.vault.adapter.rmdir(packCachePath, true);
+        console.log(`[IconResolver] Removed cache for ${packName}`);
+      }
+
+      // Remove from memory cache
+      for (const [key, value] of this.memoryCache.entries()) {
+        if (value.iconPackName === packName) {
+          this.memoryCache.delete(key);
+        }
+      }
+    } catch (error) {
+      console.error(`[IconResolver] Failed to remove cache for ${packName}:`, error);
+    }
+  }
+
+  /**
+   * 获取缓存统计信息
+   * Get cache statistics
+   */
+  getCacheStats() {
+    return {
+      memorySize: this.memoryCache.size,
+      prefixIndexSize: this.prefixIndex.size,
+    };
+  }
+}
+
+module.exports = IconResolver;
+
+// ========== End icon-resolver.js ==========
+
+// ========== inline-icon-loader.js ==========
+/**
+ * InlineIconLoader - 内联图标延迟加载器
+ * Inline Icon Loader for deferred loading of :IconName: syntax in notes
+ *
+ * 用于处理笔记中的 :IconName: 语法，采用批处理策略避免阻塞渲染
+ * Handles :IconName: syntax in notes with batching to avoid blocking render
+ */
+
+'use strict';
+
+class InlineIconLoader {
+  /**
+   * @param {Object} plugin - Iconize plugin instance
+   */
+  constructor(plugin) {
+    this.plugin = plugin;
+
+    // 待处理的图标请求队列 / Pending icon requests queue
+    this.pending = new Set();
+
+    // 加载失败的图标（避免重复尝试）/ Failed icons (avoid retries)
+    this.failed = new Set();
+
+    // 批处理定时器 / Batch processing timer
+    this.timer = null;
+
+    // 是否正在处理 / Processing flag
+    this.inFlight = false;
+
+    // 批处理延迟（毫秒）/ Batch delay in milliseconds
+    this.batchDelayMs = 60;
+  }
+
+  /**
+   * 请求加载图标（非阻塞）
+   * Request icon loading (non-blocking)
+   *
+   * @param {string} iconId - Icon identifier (e.g., "LiHome")
+   */
+  requestIcon(iconId) {
+    if (!iconId) return;
+
+    // 跳过已失败或待处理的图标 / Skip failed or pending icons
+    if (this.failed.has(iconId) || this.pending.has(iconId)) {
+      return;
+    }
+
+    // 检查是否已加载到内存 / Check if already loaded
+    if (this.plugin.iconResolver && this.plugin.iconResolver.peek(iconId)) {
+      return;
+    }
+
+    // 加入队列并调度批处理 / Add to queue and schedule batch
+    this.pending.add(iconId);
+    this.schedule();
+  }
+
+  /**
+   * 调度批处理（使用防抖）
+   * Schedule batch processing (with debouncing)
+   */
+  schedule() {
+    // 如果已有定时器或正在处理，跳过 / Skip if timer exists or processing
+    if (this.timer !== null || this.inFlight) {
+      return;
+    }
+
+    this.timer = window.setTimeout(() => {
+      this.timer = null;
+      this.flush().catch(error => {
+        console.error('[InlineIconLoader] Flush failed:', error);
+      });
+    }, this.batchDelayMs);
+  }
+
+  /**
+   * 批量处理队列中的图标
+   * Batch process queued icons
+   *
+   * @returns {Promise<void>}
+   */
+  async flush() {
+    if (this.pending.size === 0) {
+      return;
+    }
+
+    const icons = [...this.pending];
+    this.pending.clear();
+    this.inFlight = true;
+
+    let loaded = 0;
+    const startTime = Date.now();
+
+    try {
+      for (const iconId of icons) {
+        try {
+          // 使用 persist: true 确保写入磁盘缓存
+          // Use persist: true to ensure disk cache write
+          const icon = await this.plugin.iconResolver.resolve(iconId, {
+            persist: true
+          });
+
+          if (icon) {
+            loaded++;
+          } else {
+            this.failed.add(iconId);
+            console.warn(`[InlineIconLoader] Icon not found: ${iconId}`);
+          }
+        } catch (error) {
+          console.error(`[InlineIconLoader] Failed to load ${iconId}:`, error);
+          this.failed.add(iconId);
+        }
+      }
+    } finally {
+      this.inFlight = false;
+    }
+
+    const elapsedMs = Date.now() - startTime;
+    console.log(
+      `[InlineIconLoader] Batch complete: ${loaded}/${icons.length} loaded in ${elapsedMs}ms`
+    );
+
+    // 重新渲染打开的笔记以显示新加载的图标
+    // Re-render open notes to display newly loaded icons
+    if (loaded > 0) {
+      this.repaintOpenNotes();
+    }
+
+    // 处理批处理期间新增的请求
+    // Handle new requests that arrived during batch
+    if (this.pending.size > 0) {
+      this.schedule();
+    }
+  }
+
+  /**
+   * 重新渲染打开的笔记
+   * Repaint open notes to show loaded icons
+   */
+  repaintOpenNotes() {
+    try {
+      const markdownLeaves = this.plugin.app.workspace.getLeavesOfType('markdown');
+
+      for (const leaf of markdownLeaves) {
+        const view = leaf.view;
+        if (!view) continue;
+
+        try {
+          // 重新渲染预览模式 / Re-render preview mode
+          if (view.previewMode && typeof view.previewMode.rerender === 'function') {
+            view.previewMode.rerender(true);
+          }
+
+          // 触发实时预览模式的重绘 / Trigger live preview repaint
+          if (view.editor && view.editor.cm) {
+            const editorView = view.editor.cm;
+            if (editorView.dispatch) {
+              editorView.dispatch({}); // Empty transaction triggers redraw
+            }
+          }
+        } catch (error) {
+          console.warn('[InlineIconLoader] Failed to repaint a note:', error);
+        }
+      }
+    } catch (error) {
+      console.error('[InlineIconLoader] Failed to repaint open notes:', error);
+    }
+  }
+
+  /**
+   * 重置加载器状态（用于重新加载图标包后）
+   * Reset loader state (after reloading icon packs)
+   */
+  reset() {
+    this.pending.clear();
+    this.failed.clear();
+
+    if (this.timer !== null) {
+      window.clearTimeout(this.timer);
+      this.timer = null;
+    }
+
+    console.log('[InlineIconLoader] Reset complete');
+  }
+
+  /**
+   * 获取加载器统计信息
+   * Get loader statistics
+   */
+  getStats() {
+    return {
+      pending: this.pending.size,
+      failed: this.failed.size,
+      inFlight: this.inFlight,
+    };
+  }
+
+  /**
+   * 清除失败记录（允许重试）
+   * Clear failed records (allow retries)
+   */
+  clearFailedList() {
+    const count = this.failed.size;
+    this.failed.clear();
+    console.log(`[InlineIconLoader] Cleared ${count} failed icons`);
+  }
+}
+
+module.exports = InlineIconLoader;
+
+// ========== End inline-icon-loader.js ==========
+
+// ========== icon-indexing.js ==========
+/**
+ * Icon Indexing Utilities - 图标索引构建工具
+ * Utilities for building lightweight icon pack indexes
+ *
+ * 构建轻量级索引，仅包含元数据，不解析 SVG 内容
+ * Builds lightweight indexes containing only metadata, without parsing SVG
+ */
+
+'use strict';
+
+const JSZip = require('jszip');
+
+/**
+ * 构建图标包索引
+ * Build icon pack index from source
+ *
+ * @param {Object} plugin - Iconize plugin instance
+ * @param {string} packName - Icon pack name
+ * @param {string} sourcePath - Path to ZIP file or folder
+ * @param {string} prefix - Icon prefix (e.g., "Li" for Lucide)
+ * @param {string} extraPath - Extra path inside ZIP (optional)
+ * @returns {Promise<Object>} Index object
+ */
+async function buildIconPackIndex(plugin, packName, sourcePath, prefix, extraPath = '') {
+  const adapter = plugin.app.vault.adapter;
+
+  try {
+    // 判断源类型 / Determine source type
+    const isZip = sourcePath.endsWith('.zip');
+
+    let entries = [];
+    let fingerprint = '';
+
+    if (isZip) {
+      // 从 ZIP 构建索引 / Build index from ZIP
+      const result = await buildIndexFromZip(adapter, sourcePath, prefix, extraPath);
+      entries = result.entries;
+      fingerprint = result.fingerprint;
+    } else {
+      // 从文件夹构建索引 / Build index from folder
+      const result = await buildIndexFromFolder(adapter, sourcePath, prefix);
+      entries = result.entries;
+      fingerprint = result.fingerprint;
+    }
+
+    return {
+      name: packName,
+      prefix: prefix,
+      fingerprint: fingerprint,
+      entries: entries,
+      indexedAt: Date.now(),
+      version: 1, // Index format version
+    };
+  } catch (error) {
+    console.error(`[IconIndexing] Failed to build index for ${packName}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * 从 ZIP 文件构建索引
+ * Build index from ZIP file
+ */
+async function buildIndexFromZip(adapter, zipPath, prefix, extraPath) {
+  const entries = [];
+
+  try {
+    // 读取 ZIP 文件 / Read ZIP file
+    const zipContent = await adapter.readBinary(zipPath);
+    const zip = await JSZip.loadAsync(zipContent);
+
+    // 计算指纹（使用文件大小作为简单指纹）/ Calculate fingerprint
+    const fingerprint = `zip-${zipContent.byteLength}`;
+
+    // 遍历 ZIP 中的 SVG 文件 / Iterate SVG files in ZIP
+    zip.forEach((relativePath, file) => {
+      // 跳过目录和非 SVG 文件 / Skip directories and non-SVG files
+      if (file.dir || !relativePath.toLowerCase().endsWith('.svg')) {
+        return;
+      }
+
+      // 检查是否在指定的 extraPath 下 / Check if under extraPath
+      if (extraPath && !relativePath.startsWith(extraPath)) {
+        return;
+      }
+
+      // 提取文件名 / Extract filename
+      const filename = relativePath.split('/').pop();
+      const nameWithoutExt = filename.replace('.svg', '');
+
+      // 生成规范化名称和 ID / Generate normalized name and ID
+      const normalizedName = getNormalizedName(nameWithoutExt);
+      const iconId = `${prefix}${normalizedName}`;
+
+      entries.push({
+        id: iconId,
+        name: normalizedName,
+        filename: extraPath ? relativePath : filename,
+        prefix: prefix,
+      });
+    });
+
+    console.log(`[IconIndexing] Indexed ${entries.length} icons from ZIP: ${zipPath}`);
+    return { entries, fingerprint };
+  } catch (error) {
+    console.error(`[IconIndexing] Failed to read ZIP: ${zipPath}`, error);
+    throw error;
+  }
+}
+
+/**
+ * 从文件夹构建索引
+ * Build index from folder
+ */
+async function buildIndexFromFolder(adapter, folderPath, prefix) {
+  const entries = [];
+
+  try {
+    // 列出文件夹内容 / List folder contents
+    const listing = await adapter.list(folderPath);
+
+    // 递归收集所有 SVG 文件 / Recursively collect all SVG files
+    const svgFiles = await collectSvgFiles(adapter, folderPath, listing);
+
+    // 计算指纹（使用文件数量和最后修改时间）/ Calculate fingerprint
+    const fingerprint = `folder-${svgFiles.length}-${Date.now()}`;
+
+    for (const filePath of svgFiles) {
+      const filename = filePath.split('/').pop();
+      const nameWithoutExt = filename.replace('.svg', '');
+      const normalizedName = getNormalizedName(nameWithoutExt);
+      const iconId = `${prefix}${normalizedName}`;
+
+      entries.push({
+        id: iconId,
+        name: normalizedName,
+        filename: filename,
+        prefix: prefix,
+        path: filePath, // 保存完整路径用于文件夹模式 / Save full path for folder mode
+      });
+    }
+
+    console.log(`[IconIndexing] Indexed ${entries.length} icons from folder: ${folderPath}`);
+    return { entries, fingerprint };
+  } catch (error) {
+    console.error(`[IconIndexing] Failed to read folder: ${folderPath}`, error);
+    throw error;
+  }
+}
+
+/**
+ * 递归收集文件夹中的所有 SVG 文件
+ * Recursively collect all SVG files in folder
+ */
+async function collectSvgFiles(adapter, basePath, listing) {
+  const svgFiles = [];
+
+  // 添加当前层级的 SVG 文件 / Add SVG files at current level
+  for (const file of listing.files) {
+    if (file.toLowerCase().endsWith('.svg')) {
+      svgFiles.push(file);
+    }
+  }
+
+  // 递归处理子文件夹 / Recursively process subfolders
+  for (const folder of listing.folders) {
+    try {
+      const subListing = await adapter.list(folder);
+      const subFiles = await collectSvgFiles(adapter, folder, subListing);
+      svgFiles.push(...subFiles);
+    } catch (error) {
+      console.warn(`[IconIndexing] Failed to read subfolder: ${folder}`, error);
+    }
+  }
+
+  return svgFiles;
+}
+
+/**
+ * 规范化图标名称（移除特殊字符，转换为 PascalCase）
+ * Normalize icon name (remove special chars, convert to PascalCase)
+ *
+ * @param {string} name - Original icon name
+ * @returns {string} Normalized name
+ */
+function getNormalizedName(name) {
+  return name
+    .split(/[-_\s]+/)
+    .map(part => capitalize(part))
+    .join('');
+}
+
+/**
+ * 首字母大写
+ * Capitalize first letter
+ */
+function capitalize(str) {
+  if (!str) return '';
+  return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+}
+
+/**
+ * 创建图标包前缀
+ * Create icon pack prefix from name
+ *
+ * @param {string} name - Icon pack name
+ * @returns {string} Prefix (e.g., "font-awesome-solid" -> "Fas")
+ */
+function createIconPackPrefix(name) {
+  return name
+    .split('-')
+    .map(part => part.charAt(0).toUpperCase())
+    .join('')
+    .substring(0, 3); // Limit to 3 characters
+}
+
+/**
+ * 获取 ZIP 文件指纹（用于检测变更）
+ * Get ZIP file fingerprint (for change detection)
+ *
+ * @param {Object} plugin - Iconize plugin instance
+ * @param {string} zipPath - Path to ZIP file
+ * @returns {Promise<string>} Fingerprint string
+ */
+async function getZipFingerprint(plugin, zipPath) {
+  try {
+    const stat = await plugin.app.vault.adapter.stat(zipPath);
+    if (stat) {
+      // 使用文件大小和修改时间作为指纹 / Use size and mtime as fingerprint
+      return `${stat.size}-${stat.mtime}`;
+    }
+  } catch (error) {
+    console.warn(`[IconIndexing] Failed to get fingerprint for ${zipPath}:`, error);
+  }
+
+  // 回退到读取文件大小 / Fallback to file size
+  try {
+    const content = await plugin.app.vault.adapter.readBinary(zipPath);
+    return `zip-${content.byteLength}`;
+  } catch (error) {
+    console.error(`[IconIndexing] Failed to read ${zipPath}:`, error);
+    return `unknown-${Date.now()}`;
+  }
+}
+
+/**
+ * 获取文件夹指纹
+ * Get folder fingerprint
+ *
+ * @param {Object} adapter - Vault adapter
+ * @param {string} folderPath - Path to folder
+ * @returns {Promise<string>} Fingerprint string
+ */
+async function getFolderFingerprint(adapter, folderPath) {
+  try {
+    const listing = await adapter.list(folderPath);
+    const fileCount = listing.files.length;
+    return `folder-${fileCount}-${Date.now()}`;
+  } catch (error) {
+    console.error(`[IconIndexing] Failed to get folder fingerprint:`, error);
+    return `unknown-${Date.now()}`;
+  }
+}
+
+module.exports = {
+  buildIconPackIndex,
+  buildIndexFromZip,
+  buildIndexFromFolder,
+  getNormalizedName,
+  createIconPackPrefix,
+  getZipFingerprint,
+  getFolderFingerprint,
+};
+
+// ========== End icon-indexing.js ==========
+
+
 
 const iconPacks$1 = {
     faBrands: {
